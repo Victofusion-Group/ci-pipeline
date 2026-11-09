@@ -2,3 +2,5 @@ node_modules/
 .lighthouseci/
 coverage/
 .superpowers/
+test-results/
+playwright-report/
