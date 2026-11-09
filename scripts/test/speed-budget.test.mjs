@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { BUDGETS, median, evaluatePages, evaluateTimings } from '../speed-budget.mjs';
 
 // A minimal Lighthouse result with only the fields the checker reads.
-function lhr({ url = 'https://x.example.com/', final, bytes = 800000, lcp = 1600, cls = 0.01, tbt = 90, runtimeError } = {}) {
+function lhr({ url = 'https://example.com/', final, bytes = 800000, lcp = 1600, cls = 0.01, tbt = 90, runtimeError } = {}) {
   const audits = {};
   if (bytes !== null) audits['total-byte-weight'] = { numericValue: bytes };
   audits['largest-contentful-paint'] = { numericValue: lcp };
@@ -59,20 +59,20 @@ test('missing metric is FAIL', () => {
 });
 
 test('redirect to a different path is WARN', () => {
-  const [r] = evaluatePages([lhr({ url: 'https://x.example.com/dashboard', final: 'https://x.example.com/login' })]);
+  const [r] = evaluatePages([lhr({ url: 'https://example.com/dashboard', final: 'https://example.com/login' })]);
   assert.equal(r.stage, 'Speed: /dashboard');
   assert.equal(r.status, 'WARN');
   assert.ok(r.detail.startsWith('Measured /login instead (redirected). '), r.detail);
 });
 
 test('redirect that also breaks budget is FAIL', () => {
-  const [r] = evaluatePages([lhr({ url: 'https://x.example.com/dashboard', final: 'https://x.example.com/login', lcp: 4000 })]);
+  const [r] = evaluatePages([lhr({ url: 'https://example.com/dashboard', final: 'https://example.com/login', lcp: 4000 })]);
   assert.equal(r.status, 'FAIL');
   assert.ok(r.detail.startsWith('Measured /login instead (redirected). '));
 });
 
 test('groups by requested url, one record per page', () => {
-  const rs = evaluatePages([lhr({ url: 'https://x.example.com/a' }), lhr({ url: 'https://x.example.com/b' }), lhr({ url: 'https://x.example.com/a' })]);
+  const rs = evaluatePages([lhr({ url: 'https://example.com/a' }), lhr({ url: 'https://example.com/b' }), lhr({ url: 'https://example.com/a' })]);
   assert.deepEqual(rs.map((r) => r.stage), ['Speed: /a', 'Speed: /b']);
 });
 
@@ -82,9 +82,9 @@ test('stage name uses the full url when hosts differ', () => {
 });
 
 test('falls back to finalUrl', () => {
-  const l = lhr({ url: 'https://x.example.com/a' });
+  const l = lhr({ url: 'https://example.com/a' });
   delete l.finalDisplayedUrl;
-  l.finalUrl = 'https://x.example.com/b';
+  l.finalUrl = 'https://example.com/b';
   assert.ok(evaluatePages([l])[0].detail.startsWith('Measured /b instead'));
 });
 

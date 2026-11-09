@@ -86,3 +86,39 @@ test('windows-style backslash keys still match', () => {
   const r = run([{ root: '.', data }], crit).find((x) => x.stage === 'Critical-path coverage');
   assert.equal(r.status, 'PASS');
 });
+
+test('a floor that is not a number is FAIL, never PASS', () => {
+  for (const floor of [NaN, undefined, '', true, '62']) {
+    const [r] = run([totalOnly(100, 90)], { floor });
+    assert.deepEqual(r, { stage: 'Coverage', status: 'FAIL', detail: 'No coverage floor set in ci.yml.' }, String(floor));
+  }
+});
+
+test('a coverage file with no measured lines is MISSING', () => {
+  const [r] = run([totalOnly(0, 0)]);
+  assert.deepEqual(r, { stage: 'Coverage', status: 'MISSING', detail: 'Coverage file has no measured lines.' });
+});
+
+test('critical files that all have no measured lines are MISSING', () => {
+  const data = { total: { lines: { total: 10, covered: 10, pct: 100 } }, [join(REPO, 'src/pay/types.js')]: { lines: { total: 0, covered: 0, pct: 100 } } };
+  const r = run([{ root: '.', data }], crit).find((x) => x.stage === 'Critical-path coverage');
+  assert.deepEqual(r, { stage: 'Critical-path coverage', status: 'MISSING', detail: 'Files on the critical-path list have no measured lines.' });
+});
+
+test('CLI: empty, missing or non-numeric --floor fails', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { readResults } = await import('../lib/results.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'cov-'));
+  writeFileSync(join(dir, 'cov.json'), JSON.stringify({ total: { lines: { total: 100, covered: 90, pct: 90 } } }));
+  const cli = new URL('../coverage-ratchet.mjs', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+  const variants = [['--floor', ''], [], ['--floor', 'abc']];
+  for (const [i, extra] of variants.entries()) {
+    const results = join(dir, `r${i}.jsonl`);
+    spawnSync(process.execPath, [cli, '--cwd', dir, '--files', 'cov.json', ...extra, '--results', results]);
+    const [r] = readResults(results);
+    assert.equal(r.status, 'FAIL', JSON.stringify(extra));
+    assert.equal(r.detail, 'No coverage floor set in ci.yml.');
+  }
+});

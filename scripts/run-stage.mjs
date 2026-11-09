@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { appendResult } from './lib/results.mjs';
-import { isMain, parseArgs } from './lib/cli.mjs';
+import { flag, isMain, parseArgs } from './lib/cli.mjs';
 
 function defaultExec(cmd, { cwd, env }) {
   return new Promise((resolve) => {
@@ -45,11 +45,11 @@ async function main() {
     command: a.command,
     pm: a.pm || 'npm',
     cwd,
-    required: Boolean(a.required),
+    required: flag(a.required),
   });
   appendResult(a.results, record);
   console.log(`${record.status}: ${record.stage} - ${record.detail}`);
-  return a['stop-on-fail'] && record.status === 'FAIL' ? 1 : 0;
+  return flag(a['stop-on-fail']) && record.status === 'FAIL' ? 1 : 0;
 }
 
 if (isMain(import.meta.url)) process.exitCode = await main();

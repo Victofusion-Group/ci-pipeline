@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { appendResult } from './lib/results.mjs';
-import { isMain, parseArgs } from './lib/cli.mjs';
+import { flag, isMain, parseArgs } from './lib/cli.mjs';
 
 export const BUDGETS = {
   weightBytes: { warn: 1_000_000, fail: 2_000_000 },
@@ -134,7 +134,7 @@ if (isMain(import.meta.url)) {
   }
   if (a.timings && existsSync(a.timings)) {
     const entries = readFileSync(a.timings, 'utf8').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
-    records.push(...evaluateTimings(entries, { warnOnly: Boolean(a['warn-only']) }));
+    records.push(...evaluateTimings(entries, { warnOnly: flag(a['warn-only']) }));
   }
   for (const r of records) {
     appendResult(a.results, r);

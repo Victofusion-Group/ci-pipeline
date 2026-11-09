@@ -42,7 +42,10 @@ test('empty results', () => {
 });
 
 test('pipe in detail is escaped', () => {
-  assert.ok(renderSummary('CI', [{ stage: 'S', status: 'PASS', detail: 'a|b' }]).includes('a\|b'));
+  const row = renderSummary('CI', [{ stage: 'S', status: 'PASS', detail: 'a|b' }]).split(String.fromCharCode(10)).find((l) => l.startsWith('| S '));
+  assert.ok(row.includes('a\\|b'), row);
+  // Split on unescaped pipes only: leading and trailing give two empty parts, plus 3 cells.
+  assert.equal(row.split(/(?<!\\)\|/).length, 5);
 });
 
 test('hasFailure', () => {

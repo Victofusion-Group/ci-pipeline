@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { appendResult } from './lib/results.mjs';
-import { isMain, parseArgs } from './lib/cli.mjs';
+import { flag, isMain, parseArgs } from './lib/cli.mjs';
 
 const toSlash = (p) => p.split(String.fromCharCode(92)).join('/');
 const isAbsolute = (p) => p.startsWith('/') || /^[a-zA-Z]:\//.test(p);
@@ -20,6 +20,9 @@ const one = (n) => n.toFixed(1);
 const pctOf = (covered, total) => (total === 0 ? 100 : (covered / total) * 100);
 
 export function evaluateCoverage({ summaries, floor, criticalGlobs = [], criticalEnforced = false, repoRoot = process.env.GITHUB_WORKSPACE || process.cwd() }) {
+  if (typeof floor !== 'number' || !Number.isFinite(floor)) {
+    return [{ stage: 'Coverage', status: 'FAIL', detail: 'No coverage floor set in ci.yml.' }];
+  }
   if (summaries.length === 0) {
     return [{ stage: 'Coverage', status: 'MISSING', detail: 'No coverage file found. Add the json-summary coverage reporter.' }];
   }
@@ -36,6 +39,9 @@ export function evaluateCoverage({ summaries, floor, criticalGlobs = [], critica
     }
   }
 
+  if (total === 0) {
+    return [{ stage: 'Coverage', status: 'MISSING', detail: 'Coverage file has no measured lines.' }];
+  }
   const pct = pctOf(covered, total);
   const records = [];
   if (pct < floor) {
@@ -54,7 +60,9 @@ export function evaluateCoverage({ summaries, floor, criticalGlobs = [], critica
     } else {
       const cTotal = matched.reduce((s, f) => s + f.total, 0);
       const cCovered = matched.reduce((s, f) => s + f.covered, 0);
-      if (cCovered >= cTotal) {
+      if (cTotal === 0) {
+        records.push({ stage, status: 'MISSING', detail: 'Files on the critical-path list have no measured lines.' });
+      } else if (cCovered >= cTotal) {
         records.push({
           stage,
           status: 'PASS',
@@ -74,6 +82,11 @@ export function evaluateCoverage({ summaries, floor, criticalGlobs = [], critica
   return records;
 }
 
+// An unset workflow input arrives as "" or a bare flag; both mean no floor.
+function parseFloor(v) {
+  return typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN;
+}
+
 const lines = (s) => (typeof s === 'string' ? s.split('\n').map((l) => l.trim()).filter(Boolean) : []);
 
 if (isMain(import.meta.url)) {
@@ -88,9 +101,9 @@ if (isMain(import.meta.url)) {
   }
   const records = evaluateCoverage({
     summaries,
-    floor: Number(a.floor),
+    floor: parseFloor(a.floor),
     criticalGlobs: lines(a.critical),
-    criticalEnforced: Boolean(a['critical-enforced']),
+    criticalEnforced: flag(a['critical-enforced']),
   });
   for (const r of records) {
     appendResult(a.results, r);

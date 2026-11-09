@@ -13,7 +13,7 @@ function runGh(args) {
 
 function buildBody(records, target, runUrl) {
   return [
-    `Speed check on ${target} found pages or actions over the limit.`,
+    `Speed check on ${target} found pages or actions over the limit, or could not measure them.`,
     '',
     renderSummary(`Speed report (${target})`, records),
     `Run: ${runUrl}`,
@@ -23,7 +23,10 @@ function buildBody(records, target, runUrl) {
 // Keeps one open "Speed report" issue per project: opens it on a FAIL, adds a
 // comment while it stays open, closes it once nothing fails.
 export async function syncSpeedIssue({ records, target, runUrl, gh, now = new Date() }) {
-  const failed = records.some((r) => r.status === 'FAIL');
+  // No records means the checks never ran: that is not a clean bill, so touch nothing.
+  if (records.length === 0) return 'none';
+  // A check that could not measure is treated like a failure, never like a pass.
+  const failed = records.some((r) => r.status === 'FAIL' || r.status === 'MISSING');
   const listed = JSON.parse(
     (await gh(['issue', 'list', '--state', 'open', '--search', `in:title "${TITLE}"`, '--json', 'number,title'])) || '[]',
   );

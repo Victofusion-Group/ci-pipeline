@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { syncSpeedIssue } from '../speed-issue.mjs';
 
-const RUN = 'https://github.com/Victofusion-Group/x/actions/runs/1';
+const RUN = 'https://example.com/runs/1';
 const failing = [
   { stage: 'Speed: /', status: 'FAIL', detail: '2.4 MB sent (limit 2 MB)' },
   { stage: 'Action: Save', status: 'PASS', detail: 'Took 0.4 s' },
@@ -73,4 +73,23 @@ test('only WARN and no open issue does nothing', async () => {
 test('all passing and no open issue does nothing', async () => {
   const { gh } = fakeGh([]);
   assert.equal(await syncSpeedIssue({ records: passing, target: 'live', runUrl: RUN, gh }), 'none');
+});
+
+const missing = [{ stage: 'Speed: pages', status: 'MISSING', detail: 'No Lighthouse results found.' }];
+
+test('zero records touch nothing, even with an open issue', async () => {
+  const { gh, calls } = fakeGh([{ number: 7, title: 'Speed report' }]);
+  assert.equal(await syncSpeedIssue({ records: [], target: 'live', runUrl: RUN, gh }), 'none');
+  assert.equal(calls.some((c) => c[1] === 'comment' || c[1] === 'close' || c[1] === 'create'), false);
+});
+
+test('MISSING with an open issue comments and keeps it open', async () => {
+  const { gh, calls } = fakeGh([{ number: 7, title: 'Speed report' }]);
+  assert.equal(await syncSpeedIssue({ records: missing, target: 'live', runUrl: RUN, gh }), 'commented');
+  assert.equal(calls.some((c) => c[1] === 'close'), false);
+});
+
+test('MISSING with no open issue opens one', async () => {
+  const { gh } = fakeGh([]);
+  assert.equal(await syncSpeedIssue({ records: missing, target: 'live', runUrl: RUN, gh }), 'opened');
 });

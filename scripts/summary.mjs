@@ -4,7 +4,7 @@ import { isMain, parseArgs } from './lib/cli.mjs';
 
 const ICONS = { PASS: '✅ PASS', FAIL: '❌ FAIL', MISSING: '🟡 MISSING', WARN: '⚠️ WARN' };
 
-const cell = (text) => String(text).replace(/\|/g, '\|').replace(/\r?\n/g, ' ');
+const cell = (text) => String(text).replace(/\|/g, '\x5c|').replace(/\r?\n/g, ' ');
 
 export function hasFailure(records) {
   return records.length === 0 || records.some((r) => r.status === 'FAIL');
