@@ -35,10 +35,9 @@ jobs:
 
   speed-fixture:
     uses: ./.github/workflows/speed.yml
-    # speed.yml asks for issues: write (for the Speed report issue); a caller must grant it.
+    # Only the nightly job that sets open_issue: true needs issues: write as well.
     permissions:
       contents: read
-      issues: write
     with:
       urls: https://example.com/
       target: self-test

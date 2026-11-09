@@ -80,11 +80,34 @@ jobs:
           echo "RESULTS=$RUNNER_TEMP/results.jsonl" >> "$GITHUB_ENV"
           echo "TIMINGS=$RUNNER_TEMP/timings.jsonl" >> "$GITHUB_ENV"
 
+      # pnpm/action-setup stops with "Multiple versions of pnpm specified" when it is
+      # given a version and package.json also names one (packageManager: pnpm@x).
+      # Pass no version in that case, and point it at the package.json that names it.
+      - name: Pick pnpm version
+        id: pnpm
+        if: inputs.package_manager == 'pnpm'
+        env:
+          PNPM_VERSION: ${{ inputs.pnpm_version }}
+        run: |
+          version="$PNPM_VERSION"
+          file=package.json
+          for f in "$WD/package.json" package.json; do
+            if [ -f "$f" ] && jq -e '(.packageManager // "") | startswith("pnpm@")' "$f" > /dev/null 2>&1; then
+              version=""
+              file="$f"
+              break
+            fi
+          done
+          echo "Using pnpm ${version:-from $file}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "package_json_file=$file" >> "$GITHUB_OUTPUT"
+
       - name: Set up pnpm
         if: inputs.package_manager == 'pnpm'
         uses: pnpm/action-setup@v6
         with:
-          version: ${{ inputs.pnpm_version }}
+          version: ${{ steps.pnpm.outputs.version }}
+          package_json_file: ${{ steps.pnpm.outputs.package_json_file }}
 
       - name: Set up Node
         uses: actions/setup-node@v7
@@ -145,16 +168,26 @@ jobs:
           REQUIRED: ${{ inputs.money_project }}
         run: node "$RUNNER_TEMP/ci-pipeline/scripts/run-stage.mjs" --stage "End-to-end tests" --script "$E2E_SCRIPT" --pm "$PM" --cwd "$WD" --results "$RESULTS" --required "$REQUIRED"
 
+      # No timings file means no timed action ran: that is a MISSING row, not silence.
+      # Skipped when the end-to-end script is absent; its own row already says so.
       - name: Button speed
         if: always()
-        run: |
-          if [ -f "$TIMINGS" ]; then
-            node "$RUNNER_TEMP/ci-pipeline/scripts/speed-budget.mjs" --results "$RESULTS" --timings "$TIMINGS" --warn-only
-          fi
+        env:
+          E2E_SCRIPT: ${{ inputs.e2e_script }}
+        run: node "$RUNNER_TEMP/ci-pipeline/scripts/speed-budget.mjs" --results "$RESULTS" --timings "$TIMINGS" --warn-only --only-if-script "$E2E_SCRIPT" --cwd "$WD"
 
       - name: Summary
         if: always()
-        run: node "$RUNNER_TEMP/ci-pipeline/scripts/summary.mjs" --title "Deep checks" --results "$RESULTS"
+        env:
+          PIPELINE_REF: ${{ inputs.pipeline_ref }}
+        run: |
+          if [ ! -d "$RUNNER_TEMP/ci-pipeline/scripts" ]; then
+            msg="The shared checker could not load its scripts at ref $PIPELINE_REF. Check pipeline_ref in ci.yml matches the @ref in uses:."
+            echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$msg"
+            exit 1
+          fi
+          node "$RUNNER_TEMP/ci-pipeline/scripts/summary.mjs" --title "Deep checks" --results "$RESULTS"
 
       # Runs after Summary: a FAIL row only fails the job at the Summary step.
       - name: Upload end-to-end report
