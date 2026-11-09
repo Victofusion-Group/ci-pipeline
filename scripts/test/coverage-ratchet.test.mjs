@@ -18,6 +18,16 @@ test('below floor is FAIL', () => {
   assert.deepEqual(r, { stage: 'Coverage', status: 'FAIL', detail: "58.2% of lines are tested, below this project's floor of 62%." });
 });
 
+test('just below the floor never reads as the floor', () => {
+  const [r] = run([totalOnly(10000, 6399)], { floor: 64 });
+  assert.deepEqual(r, { stage: 'Coverage', status: 'FAIL', detail: "63.9% of lines are tested, below this project's floor of 64%." });
+});
+
+test('exactly at the floor is PASS', () => {
+  const [r] = run([totalOnly(1000, 640)], { floor: 64 });
+  assert.deepEqual(r, { stage: 'Coverage', status: 'PASS', detail: '64.0% of lines are tested (floor 64%).' });
+});
+
 test('at floor is PASS', () => {
   const [r] = run([totalOnly(1000, 624)]);
   assert.deepEqual(r, { stage: 'Coverage', status: 'PASS', detail: '62.4% of lines are tested (floor 62%).' });

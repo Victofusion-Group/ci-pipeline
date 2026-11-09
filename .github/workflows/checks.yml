@@ -75,11 +75,34 @@ jobs:
           mv .ci-pipeline "$RUNNER_TEMP/ci-pipeline"
           echo "RESULTS=$RUNNER_TEMP/results.jsonl" >> "$GITHUB_ENV"
 
+      # pnpm/action-setup stops with "Multiple versions of pnpm specified" when it is
+      # given a version and package.json also names one (packageManager: pnpm@x).
+      # Pass no version in that case, and point it at the package.json that names it.
+      - name: Pick pnpm version
+        id: pnpm
+        if: inputs.package_manager == 'pnpm'
+        env:
+          PNPM_VERSION: ${{ inputs.pnpm_version }}
+        run: |
+          version="$PNPM_VERSION"
+          file=package.json
+          for f in "$WD/package.json" package.json; do
+            if [ -f "$f" ] && jq -e '(.packageManager // "") | startswith("pnpm@")' "$f" > /dev/null 2>&1; then
+              version=""
+              file="$f"
+              break
+            fi
+          done
+          echo "Using pnpm ${version:-from $file}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "package_json_file=$file" >> "$GITHUB_OUTPUT"
+
       - name: Set up pnpm
         if: inputs.package_manager == 'pnpm'
         uses: pnpm/action-setup@v6
         with:
-          version: ${{ inputs.pnpm_version }}
+          version: ${{ steps.pnpm.outputs.version }}
+          package_json_file: ${{ steps.pnpm.outputs.package_json_file }}
 
       - name: Set up Node
         uses: actions/setup-node@v7
@@ -129,4 +152,13 @@ jobs:
 
       - name: Summary
         if: always()
-        run: node "$RUNNER_TEMP/ci-pipeline/scripts/summary.mjs" --title "Quick checks" --results "$RESULTS"
+        env:
+          PIPELINE_REF: ${{ inputs.pipeline_ref }}
+        run: |
+          if [ ! -d "$RUNNER_TEMP/ci-pipeline/scripts" ]; then
+            msg="The shared checker could not load its scripts at ref $PIPELINE_REF. Check pipeline_ref in ci.yml matches the @ref in uses:."
+            echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$msg"
+            exit 1
+          fi
+          node "$RUNNER_TEMP/ci-pipeline/scripts/summary.mjs" --title "Quick checks" --results "$RESULTS"

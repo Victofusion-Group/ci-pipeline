@@ -32,7 +32,7 @@ export async function runStage({ stage, script, command, pm = 'npm', cwd, requir
   }
   const { code } = await exec(cmd, { cwd, env: process.env });
   if (code === 0) return { stage, status: 'PASS', detail: 'Passed' };
-  return { stage, status: 'FAIL', detail: `Failed (exit code ${code}). Open the log for this step to see which test.` };
+  return { stage, status: 'FAIL', detail: `Failed (exit code ${code}). Open the log for this step to see what went wrong.` };
 }
 
 async function main() {

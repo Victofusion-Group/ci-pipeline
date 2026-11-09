@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { appendResult } from './lib/results.mjs';
 import { flag, isMain, parseArgs } from './lib/cli.mjs';
+import { hasScript } from './run-stage.mjs';
 
 export const BUDGETS = {
   weightBytes: { warn: 1_000_000, fail: 2_000_000 },
@@ -20,17 +21,38 @@ export function median(nums) {
 const trim = (n, digits) => String(Number(n.toFixed(digits)));
 const sec = (ms) => trim(ms / 1000, 1);
 
+// Writes a value that is over `limit` (same units) with `digits` decimals. When
+// that would round to the limit itself ("3 s (limit 3 s)"), it shows one more
+// decimal place, rounded up, so the reader can see the value is over.
+function over(v, limit, digits, { trimZeros = false } = {}) {
+  const out = (n, d) => (trimZeros ? trim(n, d) : n.toFixed(d));
+  if (Number(v.toFixed(digits)) > limit) return out(v, digits);
+  const d = digits + 1;
+  const f = 10 ** d;
+  let up = Math.ceil(v * f - 1e-9) / f;
+  if (up <= limit) up = limit + 1 / f;
+  return out(up, d);
+}
+
 // How each measured value reads in a sentence: `show` when within budget,
-// `problem` when over it, `unit` for the limit that was crossed.
+// `problem` when over `limit`, `unit` for the limit that was crossed.
 const METRICS = [
   { key: 'weightBytes', audit: 'total-byte-weight', missing: 'page weight', budget: BUDGETS.weightBytes,
-    show: (v) => `${(v / 1e6).toFixed(1)} MB`, problem: (v) => `${(v / 1e6).toFixed(1)} MB sent`, unit: (v) => `${trim(v / 1e6, 1)} MB` },
+    show: (v) => (v < 100_000 ? `${Math.round(v / 1000)} KB` : `${(v / 1e6).toFixed(1)} MB`),
+    problem: (v, limit) => `${over(v / 1e6, limit / 1e6, 1)} MB sent`,
+    unit: (v) => `${trim(v / 1e6, 1)} MB` },
   { key: 'lcpMs', audit: 'largest-contentful-paint', missing: 'main content time', budget: BUDGETS.lcpMs,
-    show: (v) => `main content ${sec(v)} s`, problem: (v) => `main content ${sec(v)} s`, unit: (v) => `${sec(v)} s` },
+    show: (v) => `main content ${sec(v)} s`,
+    problem: (v, limit) => `main content ${over(v / 1000, limit / 1000, 1, { trimZeros: true })} s`,
+    unit: (v) => `${sec(v)} s` },
   { key: 'cls', audit: 'cumulative-layout-shift', missing: 'layout shift', budget: BUDGETS.cls,
-    show: (v) => `layout shift ${v.toFixed(2)}`, problem: (v) => `layout shift ${v.toFixed(2)}`, unit: (v) => String(v) },
+    show: (v) => `layout shift ${v.toFixed(2)}`,
+    problem: (v, limit) => `layout shift ${over(v, limit, 2)}`,
+    unit: (v) => String(v) },
   { key: 'tbtMs', audit: 'total-blocking-time', missing: 'frozen time', budget: BUDGETS.tbtMs,
-    show: (v) => `frozen ${Math.round(v)} ms`, problem: (v) => `frozen ${Math.round(v)} ms`, unit: (v) => `${v} ms` },
+    show: (v) => `frozen ${Math.round(v)} ms`,
+    problem: (v, limit) => `frozen ${over(v, limit, 0)} ms`,
+    unit: (v) => `${v} ms` },
 ];
 
 const num = (x) => typeof x === 'number' && Number.isFinite(x);
@@ -44,7 +66,7 @@ function urlParts(u) {
   }
 }
 
-// Lighthouse reports "https://a.com" as "https://a.com/": compare on the parsed form.
+// Lighthouse reports "https://example.com" as "https://example.com/": compare on the parsed form.
 const normalise = (u) => urlParts(u).full;
 
 // `expected` lists the pages that were meant to be measured; one with no result at
@@ -92,10 +114,10 @@ export function evaluatePages(lhrs, { expected = [] } = {}) {
       const v = values[m.key];
       if (v > m.budget.fail) {
         status = 'FAIL';
-        problems.push(`${m.problem(v)} (limit ${m.unit(m.budget.fail)})`);
+        problems.push(`${m.problem(v, m.budget.fail)} (limit ${m.unit(m.budget.fail)})`);
       } else if (v > m.budget.warn) {
         if (status === 'PASS') status = 'WARN';
-        problems.push(`${m.problem(v)} (aim under ${m.unit(m.budget.warn)})`);
+        problems.push(`${m.problem(v, m.budget.warn)} (aim under ${m.unit(m.budget.warn)})`);
       }
     }
     let detail = problems.length > 0
@@ -120,19 +142,28 @@ export function evaluatePages(lhrs, { expected = [] } = {}) {
 
 export function evaluateTimings(entries, { warnOnly = false } = {}) {
   const { warn, fail } = BUDGETS.actionMs;
+  const took = (ms, limit) => over(ms / 1000, limit / 1000, 1, { trimZeros: true });
   return entries.map(({ label, ms }) => {
     const stage = `Action: ${label}`;
     if (ms > fail) {
-      return { stage, status: warnOnly ? 'WARN' : 'FAIL', detail: `Took ${sec(ms)} s (limit ${sec(fail)} s)` };
+      return { stage, status: warnOnly ? 'WARN' : 'FAIL', detail: `Took ${took(ms, fail)} s (limit ${sec(fail)} s)` };
     }
-    if (ms > warn) return { stage, status: 'WARN', detail: `Took ${sec(ms)} s (aim under ${sec(warn)} s)` };
+    if (ms > warn) return { stage, status: 'WARN', detail: `Took ${took(ms, warn)} s (aim under ${sec(warn)} s)` };
     return { stage, status: 'PASS', detail: `Took ${sec(ms)} s` };
   });
 }
 
+export const NO_TIMINGS = {
+  stage: 'Button speed',
+  status: 'MISSING',
+  detail: 'No button timings were recorded. Wrap key actions in expectFast.',
+};
+
 if (isMain(import.meta.url)) {
   const a = parseArgs(process.argv.slice(2));
   const records = [];
+  // --only-if-script: the timed tests never ran, and their own row already says why.
+  if (a['only-if-script'] && !hasScript(a.cwd || process.cwd(), a['only-if-script'])) process.exit(0);
   if (a['lhr-dir']) {
     const files = existsSync(a['lhr-dir'])
       ? readdirSync(a['lhr-dir']).filter((f) => f.startsWith('lhr-') && f.endsWith('.json')).sort()
@@ -147,9 +178,13 @@ if (isMain(import.meta.url)) {
       records.push(...evaluatePages(lhrs, { expected }));
     }
   }
-  if (a.timings && existsSync(a.timings)) {
-    const entries = readFileSync(a.timings, 'utf8').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
-    records.push(...evaluateTimings(entries, { warnOnly: flag(a['warn-only']) }));
+  if (typeof a.timings === 'string') {
+    const entries = existsSync(a.timings)
+      ? readFileSync(a.timings, 'utf8').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l))
+      : [];
+    // Asked for timings but none came back: say so rather than show nothing.
+    if (entries.length === 0) records.push(NO_TIMINGS);
+    else records.push(...evaluateTimings(entries, { warnOnly: flag(a['warn-only']) }));
   }
   for (const r of records) {
     appendResult(a.results, r);

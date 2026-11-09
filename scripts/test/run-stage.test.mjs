@@ -27,7 +27,7 @@ test('existing script that exits 0 is PASS', async () => {
 test('existing script that exits 2 is FAIL', async () => {
   const r = await runStage({ stage: 'Unit tests', script: 'test', pm: 'npm', cwd: project({ test: 'x' }), required: false, exec: fakeExec(2) });
   assert.equal(r.status, 'FAIL');
-  assert.equal(r.detail, 'Failed (exit code 2). Open the log for this step to see which test.');
+  assert.equal(r.detail, 'Failed (exit code 2). Open the log for this step to see what went wrong.');
 });
 
 test('missing script is MISSING', async () => {

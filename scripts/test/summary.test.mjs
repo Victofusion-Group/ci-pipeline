@@ -52,3 +52,53 @@ test('hasFailure', () => {
   assert.equal(hasFailure(recs), true);
   assert.equal(hasFailure([recs[0], recs[3]]), false);
 });
+
+const REPORT_ONLY = 'Report only: speed failures are shown but do not fail this run.';
+
+test('report-only adds a line under the headline', () => {
+  const lines = renderSummary('Speed', recs, { reportOnly: true }).split('\n');
+  const head = lines.findIndex((l) => l.startsWith('**'));
+  assert.equal(lines[head + 2], REPORT_ONLY);
+  assert.ok(lines.some((l) => l === '| Lint | ❌ FAIL | Failed |'));
+  assert.equal(renderSummary('Speed', recs).includes(REPORT_ONLY), false);
+});
+
+async function runCli(args, records) {
+  const { mkdtempSync, writeFileSync, readFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { spawnSync } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const dir = mkdtempSync(join(tmpdir(), 'sum-'));
+  const results = join(dir, 'results.jsonl');
+  writeFileSync(results, records.map((r) => JSON.stringify(r) + '\n').join(''));
+  const summaryFile = join(dir, 'summary.md');
+  const script = fileURLToPath(new URL('../summary.mjs', import.meta.url));
+  const res = spawnSync(process.execPath, [script, '--title', 'Speed', '--results', results, ...args], {
+    env: { ...process.env, GITHUB_STEP_SUMMARY: summaryFile },
+  });
+  return { code: res.status, text: readFileSync(summaryFile, 'utf8') };
+}
+
+test('cli: a FAIL row fails the run by default', async () => {
+  const { code, text } = await runCli([], recs);
+  assert.equal(code, 1);
+  assert.equal(text.includes(REPORT_ONLY), false);
+});
+
+test('cli: --report-only true shows the FAIL rows and exits 0', async () => {
+  const { code, text } = await runCli(['--report-only', 'true'], recs);
+  assert.equal(code, 0);
+  assert.ok(text.includes('| Lint | ❌ FAIL | Failed |'));
+  assert.ok(text.includes(REPORT_ONLY));
+});
+
+test('cli: --report-only false still fails', async () => {
+  const { code } = await runCli(['--report-only', 'false'], recs);
+  assert.equal(code, 1);
+});
+
+test('cli: report-only does not hide a run where no checks ran', async () => {
+  const { code } = await runCli(['--report-only', 'true'], []);
+  assert.equal(code, 1);
+});
