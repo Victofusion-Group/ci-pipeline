@@ -25,3 +25,10 @@ jobs:
       working_directory: fixtures/sample-app
       coverage_floor: 50
       pipeline_ref: ${{ github.sha }}
+
+  deep-fixture:
+    uses: ./.github/workflows/deep.yml
+    with:
+      package_manager: npm
+      working_directory: fixtures/sample-app
+      pipeline_ref: ${{ github.sha }}
