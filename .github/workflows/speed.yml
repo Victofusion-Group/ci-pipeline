@@ -1,0 +1,184 @@
+name: Speed
+
+on:
+  workflow_call:
+    inputs:
+      urls:
+        description: Full page addresses to measure, one per line
+        type: string
+        required: true
+      target:
+        description: Which site is measured (staging, live or self-test); shown in the summary and the issue
+        type: string
+        required: true
+      open_issue:
+        description: Open, update or close the "Speed report" issue from the results
+        type: boolean
+        default: false
+      journeys:
+        description: Also run the project's timed Playwright journeys (package.json script test:speed)
+        type: boolean
+        default: false
+      base_url:
+        description: Address the timed journeys start from (passed as BASE_URL)
+        type: string
+        default: ''
+      package_manager:
+        description: npm or pnpm (journeys only)
+        type: string
+        default: 'npm'
+      pnpm_version:
+        type: string
+        default: '9'
+      node_version:
+        type: string
+        default: '22'
+      working_directory:
+        description: Folder holding the app's package.json, relative to the repo root (journeys only)
+        type: string
+        default: '.'
+      playwright_install:
+        description: Command that installs the test browser (journeys only)
+        type: string
+        default: 'npx playwright install --with-deps chromium'
+      pipeline_ref:
+        description: Version of the ci-pipeline scripts to use
+        type: string
+        default: 'v1'
+      lhci_version:
+        description: Lighthouse CI version used to measure the pages
+        type: string
+        default: '0.16.0'
+    secrets:
+      speed_user:
+        description: Login used by the timed journeys (optional)
+        required: false
+      speed_password:
+        description: Password used by the timed journeys (optional)
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  speed:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # issues: write is for the "Speed report" issue (open_issue: true). A called
+    # workflow cannot have more than its caller gives, so the calling job must grant
+    # both `contents: read` and `issues: write`, even when open_issue is false.
+    permissions:
+      contents: read
+      issues: write
+    env:
+      WD: ${{ inputs.working_directory }}
+      PM: ${{ inputs.package_manager }}
+    steps:
+      - name: Check out project
+        if: inputs.journeys
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check out ci-pipeline scripts
+        uses: actions/checkout@v7
+        with:
+          repository: Victofusion-Group/ci-pipeline
+          ref: ${{ inputs.pipeline_ref }}
+          path: .ci-pipeline
+          persist-credentials: false
+
+      - name: Move ci-pipeline out of the project
+        run: |
+          mv .ci-pipeline "$RUNNER_TEMP/ci-pipeline"
+          echo "RESULTS=$RUNNER_TEMP/results.jsonl" >> "$GITHUB_ENV"
+          echo "TIMINGS=$RUNNER_TEMP/timings.jsonl" >> "$GITHUB_ENV"
+          echo "LHCI_DIR=$RUNNER_TEMP/lhci" >> "$GITHUB_ENV"
+
+      - name: Set up pnpm
+        if: inputs.journeys && inputs.package_manager == 'pnpm'
+        uses: pnpm/action-setup@v6
+        with:
+          version: ${{ inputs.pnpm_version }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node_version }}
+          # Caching needs the project's lockfile, which is only checked out for journeys.
+          cache: ${{ inputs.journeys && inputs.package_manager || '' }}
+          cache-dependency-path: ${{ inputs.package_manager == 'pnpm' && '**/pnpm-lock.yaml' || '**/package-lock.json' }}
+
+      # One page failing to load must not stop the others: the budget step below
+      # turns a page with no result into a FAIL row.
+      - name: Measure pages
+        env:
+          URLS: ${{ inputs.urls }}
+          LHCI_VERSION: ${{ inputs.lhci_version }}
+        run: |
+          if [ -z "${CHROME_PATH:-}" ]; then
+            CHROME_PATH="$(command -v google-chrome || command -v google-chrome-stable || true)"
+            export CHROME_PATH
+          fi
+          echo "Chrome: ${CHROME_PATH:-not found}"
+          mkdir -p "$LHCI_DIR"
+          cd "$LHCI_DIR"
+          printf '%s\n' "$URLS" | tr -d '\r' | while IFS= read -r line; do
+            url="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            [ -z "$url" ] && continue
+            echo "::group::Lighthouse $url"
+            if ! npx -y "@lhci/cli@$LHCI_VERSION" collect --additive --numberOfRuns=3 "--url=$url"; then
+              echo "::warning::Lighthouse could not measure $url"
+            fi
+            echo "::endgroup::"
+          done
+
+      - name: Page speed
+        if: always()
+        env:
+          URLS: ${{ inputs.urls }}
+        run: node "$RUNNER_TEMP/ci-pipeline/scripts/speed-budget.mjs" --results "$RESULTS" --lhr-dir "$LHCI_DIR/.lighthouseci" --urls "$URLS"
+
+      - name: Install
+        if: inputs.journeys
+        run: |
+          if [ "$PM" = pnpm ]; then CMD="pnpm install --frozen-lockfile"; else CMD="npm ci"; fi
+          node "$RUNNER_TEMP/ci-pipeline/scripts/run-stage.mjs" --stage "Install" --command "$CMD" --pm "$PM" --cwd "$WD" --results "$RESULTS" --stop-on-fail
+
+      - name: Install test browser
+        if: inputs.journeys
+        env:
+          PLAYWRIGHT_INSTALL: ${{ inputs.playwright_install }}
+        run: node "$RUNNER_TEMP/ci-pipeline/scripts/run-stage.mjs" --stage "Install test browser" --command "$PLAYWRIGHT_INSTALL" --only-if-script test:speed --pm "$PM" --cwd "$WD" --results "$RESULTS"
+
+      - name: Speed journeys
+        if: inputs.journeys
+        env:
+          CI: 'true'
+          BASE_URL: ${{ inputs.base_url }}
+          SPEED_USER: ${{ secrets.speed_user }}
+          SPEED_PASSWORD: ${{ secrets.speed_password }}
+          SPEED_TIMINGS_FILE: ${{ runner.temp }}/timings.jsonl
+        run: node "$RUNNER_TEMP/ci-pipeline/scripts/run-stage.mjs" --stage "Speed journeys" --script test:speed --pm "$PM" --cwd "$WD" --results "$RESULTS" --required true
+
+      - name: Action speed
+        if: always() && inputs.journeys
+        run: |
+          if [ -f "$TIMINGS" ]; then
+            node "$RUNNER_TEMP/ci-pipeline/scripts/speed-budget.mjs" --results "$RESULTS" --timings "$TIMINGS"
+          fi
+
+      - name: Summary
+        if: always()
+        env:
+          TARGET: ${{ inputs.target }}
+        run: node "$RUNNER_TEMP/ci-pipeline/scripts/summary.mjs" --title "Speed ($TARGET)" --results "$RESULTS"
+
+      - name: Speed report issue
+        if: always() && inputs.open_issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TARGET: ${{ inputs.target }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node "$RUNNER_TEMP/ci-pipeline/scripts/speed-issue.mjs" --results "$RESULTS" --target "$TARGET" --run-url "$RUN_URL"

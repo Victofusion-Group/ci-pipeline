@@ -32,3 +32,15 @@ jobs:
       package_manager: npm
       working_directory: fixtures/sample-app
       pipeline_ref: ${{ github.sha }}
+
+  speed-fixture:
+    uses: ./.github/workflows/speed.yml
+    # speed.yml asks for issues: write (for the Speed report issue); a caller must grant it.
+    permissions:
+      contents: read
+      issues: write
+    with:
+      urls: https://example.com/
+      target: self-test
+      open_issue: false
+      pipeline_ref: ${{ github.sha }}
