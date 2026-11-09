@@ -19,12 +19,15 @@ function repoRelative(key, root, repoRoot) {
 const one = (n) => n.toFixed(1);
 const pctOf = (covered, total) => (total === 0 ? 100 : (covered / total) * 100);
 
-export function evaluateCoverage({ summaries, floor, criticalGlobs = [], criticalEnforced = false, repoRoot = process.env.GITHUB_WORKSPACE || process.cwd() }) {
+export function evaluateCoverage({ summaries, floor, criticalGlobs = [], criticalEnforced = false, required = false, repoRoot = process.env.GITHUB_WORKSPACE || process.cwd() }) {
   if (typeof floor !== 'number' || !Number.isFinite(floor)) {
     return [{ stage: 'Coverage', status: 'FAIL', detail: 'No coverage floor set in ci.yml.' }];
   }
   if (summaries.length === 0) {
-    return [{ stage: 'Coverage', status: 'MISSING', detail: 'No coverage file found. Add the json-summary coverage reporter.' }];
+    const detail = 'No coverage file found. If the tests failed, fix them first; otherwise add the json-summary reporter.';
+    return [required
+      ? { stage: 'Coverage', status: 'FAIL', detail: `${detail} (required for this project)` }
+      : { stage: 'Coverage', status: 'MISSING', detail }];
   }
 
   let total = 0;
@@ -104,6 +107,7 @@ if (isMain(import.meta.url)) {
     floor: parseFloor(a.floor),
     criticalGlobs: lines(a.critical),
     criticalEnforced: flag(a['critical-enforced']),
+    required: flag(a.required),
   });
   for (const r of records) {
     appendResult(a.results, r);

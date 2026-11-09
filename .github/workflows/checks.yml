@@ -59,6 +59,8 @@ jobs:
     steps:
       - name: Check out project
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Check out ci-pipeline scripts
         uses: actions/checkout@v7
@@ -66,6 +68,7 @@ jobs:
           repository: Victofusion-Group/ci-pipeline
           ref: ${{ inputs.pipeline_ref }}
           path: .ci-pipeline
+          persist-credentials: false
 
       - name: Move ci-pipeline out of the project
         run: |
@@ -111,7 +114,9 @@ jobs:
           FLOOR: ${{ inputs.coverage_floor }}
           CRITICAL: ${{ inputs.critical_globs }}
           CRITICAL_ENFORCED: ${{ inputs.critical_enforced }}
-        run: node "$RUNNER_TEMP/ci-pipeline/scripts/coverage-ratchet.mjs" --cwd "$WD" --files "$FILES" --floor "$FLOOR" --critical "$CRITICAL" --critical-enforced "$CRITICAL_ENFORCED" --results "$RESULTS"
+          # A money project, or one with a floor set, must produce a coverage file.
+          REQUIRED: ${{ inputs.money_project || inputs.coverage_floor > 0 }}
+        run: node "$RUNNER_TEMP/ci-pipeline/scripts/coverage-ratchet.mjs" --cwd "$WD" --files "$FILES" --floor "$FLOOR" --critical "$CRITICAL" --critical-enforced "$CRITICAL_ENFORCED" --required "$REQUIRED" --results "$RESULTS"
 
       - name: Prepare build
         if: inputs.prepare_build != ''

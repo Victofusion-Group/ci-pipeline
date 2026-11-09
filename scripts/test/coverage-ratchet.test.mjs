@@ -34,8 +34,35 @@ test('skips absent files and merges the rest', () => {
   assert.ok(r.detail.startsWith('72.5% of lines'), r.detail);
 });
 
+const NO_FILE = 'No coverage file found. If the tests failed, fix them first; otherwise add the json-summary reporter.';
+
 test('no coverage files is MISSING', () => {
-  assert.deepEqual(run([]), [{ stage: 'Coverage', status: 'MISSING', detail: 'No coverage file found. Add the json-summary coverage reporter.' }]);
+  assert.deepEqual(run([]), [{ stage: 'Coverage', status: 'MISSING', detail: NO_FILE }]);
+});
+
+test('no coverage files on a required project is FAIL', () => {
+  assert.deepEqual(run([], { required: true }), [{ stage: 'Coverage', status: 'FAIL', detail: `${NO_FILE} (required for this project)` }]);
+});
+
+test('required does not change a found coverage file', () => {
+  const [r] = run([totalOnly(1000, 624)], { required: true });
+  assert.equal(r.status, 'PASS');
+});
+
+test('CLI: --required turns a missing coverage file into FAIL', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { readResults } = await import('../lib/results.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'cov-req-'));
+  const cli = new URL('../coverage-ratchet.mjs', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+  const cases = [[['--required', 'true'], 'FAIL'], [['--required'], 'FAIL'], [['--required', 'false'], 'MISSING'], [[], 'MISSING']];
+  for (const [i, [extra, want]] of cases.entries()) {
+    const results = join(dir, `r${i}.jsonl`);
+    spawnSync(process.execPath, [cli, '--cwd', dir, '--files', 'none.json', '--floor', '50', ...extra, '--results', results]);
+    const [r] = readResults(results);
+    assert.equal(r.status, want, JSON.stringify(extra));
+  }
 });
 
 const crit = { criticalGlobs: ['src/pay/**', 'src/auth/**'] };
