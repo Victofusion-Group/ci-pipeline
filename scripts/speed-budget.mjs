@@ -66,7 +66,7 @@ function urlParts(u) {
   }
 }
 
-// Lighthouse reports "https://a.com" as "https://a.com/": compare on the parsed form.
+// Lighthouse reports "https://example.com" as "https://example.com/": compare on the parsed form.
 const normalise = (u) => urlParts(u).full;
 
 // `expected` lists the pages that were meant to be measured; one with no result at
