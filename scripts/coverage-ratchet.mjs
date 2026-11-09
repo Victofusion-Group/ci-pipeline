@@ -48,7 +48,9 @@ export function evaluateCoverage({ summaries, floor, criticalGlobs = [], critica
   const pct = pctOf(covered, total);
   const records = [];
   if (pct < floor) {
-    records.push({ stage: 'Coverage', status: 'FAIL', detail: `${one(pct)}% of lines are tested, below this project's floor of ${floor}%.` });
+    // Rounded down, so a share just under the floor never prints as the floor.
+    const shown = (Math.floor((covered * 1000) / total) / 10).toFixed(1);
+    records.push({ stage: 'Coverage', status: 'FAIL', detail: `${shown}% of lines are tested, below this project's floor of ${floor}%.` });
   } else {
     let detail = `${one(pct)}% of lines are tested (floor ${floor}%).`;
     if (Math.floor(pct) >= floor + 2) detail += ` Raise the floor to ${Math.floor(pct)}.`;
