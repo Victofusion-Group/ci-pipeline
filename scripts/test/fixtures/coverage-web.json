@@ -1,0 +1,6 @@
+{
+  "total": { "lines": { "total": 100, "covered": 50, "pct": 50 } },
+  "src/pay/charge.js": { "lines": { "total": 40, "covered": 40, "pct": 100 } },
+  "src/auth/login.js": { "lines": { "total": 20, "covered": 10, "pct": 50 } },
+  "src/ui/button.js": { "lines": { "total": 40, "covered": 0, "pct": 0 } }
+}
