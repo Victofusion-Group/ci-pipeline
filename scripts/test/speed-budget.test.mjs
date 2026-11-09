@@ -101,3 +101,39 @@ test('with warnOnly over 3 s is WARN', () => {
   const [r] = evaluateTimings([{ label: 'Save', ms: 3400 }], { warnOnly: true });
   assert.deepEqual([r.status, r.detail], ['WARN', 'Took 3.4 s (limit 3 s)']);
 });
+
+test('an expected page with no Lighthouse result is FAIL', () => {
+  const rs = evaluatePages([lhr({ url: 'https://example.com/a' })], { expected: ['https://example.com/a', 'https://example.com/down'] });
+  assert.deepEqual(rs.map((r) => [r.stage, r.status]), [['Speed: /a', 'PASS'], ['Speed: /down', 'FAIL']]);
+  assert.equal(rs[1].detail, 'Page could not be measured: no Lighthouse result');
+});
+
+test('expected urls match Lighthouse requested urls after normalising', () => {
+  const rs = evaluatePages([lhr({ url: 'https://example.com/' })], { expected: ['https://example.com'] });
+  assert.deepEqual(rs.map((r) => [r.stage, r.status]), [['Speed: /', 'PASS']]);
+});
+
+test('every expected page unmeasured gives one FAIL each', () => {
+  const rs = evaluatePages([], { expected: ['https://example.com/', 'https://example.com/b'] });
+  assert.deepEqual(rs.map((r) => [r.stage, r.status]), [['Speed: /', 'FAIL'], ['Speed: /b', 'FAIL']]);
+});
+
+test('cli: a page with no result shows as FAIL, not silence', async () => {
+  const { mkdtempSync, writeFileSync, readFileSync, mkdirSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { execFileSync } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const dir = mkdtempSync(join(tmpdir(), 'speed-'));
+  const lhrDir = join(dir, '.lighthouseci');
+  mkdirSync(lhrDir);
+  writeFileSync(join(lhrDir, 'lhr-1.json'), JSON.stringify(lhr({ url: 'https://example.com/' })));
+  const results = join(dir, 'results.jsonl');
+  const script = fileURLToPath(new URL('../speed-budget.mjs', import.meta.url));
+  execFileSync(process.execPath, [script, '--results', results, '--lhr-dir', lhrDir, '--urls', 'https://example.com/\r\n\n  https://down.example.com/  \n']);
+  const rows = readFileSync(results, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(rows.map((r) => [r.stage, r.status]), [
+    ['Speed: https://example.com/', 'PASS'],
+    ['Speed: https://down.example.com/', 'FAIL'],
+  ]);
+});

@@ -44,11 +44,18 @@ function urlParts(u) {
   }
 }
 
-export function evaluatePages(lhrs) {
+// Lighthouse reports "https://a.com" as "https://a.com/": compare on the parsed form.
+const normalise = (u) => urlParts(u).full;
+
+// `expected` lists the pages that were meant to be measured; one with no result at
+// all (site down, Lighthouse crashed) still gets a FAIL row instead of vanishing.
+export function evaluatePages(lhrs, { expected = [] } = {}) {
   const groups = new Map();
+  for (const u of expected) groups.set(normalise(u), []);
   for (const l of lhrs) {
-    if (!groups.has(l.requestedUrl)) groups.set(l.requestedUrl, []);
-    groups.get(l.requestedUrl).push(l);
+    const key = normalise(l.requestedUrl);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(l);
   }
   const multiHost = new Set([...groups.keys()].map((u) => urlParts(u).host)).size > 1;
 
@@ -56,6 +63,10 @@ export function evaluatePages(lhrs) {
   for (const [requested, runs] of groups) {
     const req = urlParts(requested);
     const stage = `Speed: ${multiHost ? req.full : req.path}`;
+    if (runs.length === 0) {
+      records.push({ stage, status: 'FAIL', detail: 'Page could not be measured: no Lighthouse result' });
+      continue;
+    }
     const good = runs.filter((r) => !r.runtimeError);
     if (good.length === 0) {
       const msg = runs[0].runtimeError?.message ?? 'unknown error';
@@ -126,10 +137,14 @@ if (isMain(import.meta.url)) {
     const files = existsSync(a['lhr-dir'])
       ? readdirSync(a['lhr-dir']).filter((f) => f.startsWith('lhr-') && f.endsWith('.json')).sort()
       : [];
-    if (files.length === 0) {
+    const expected = typeof a.urls === 'string'
+      ? a.urls.split(/[\s,]+/).map((u) => u.trim()).filter(Boolean)
+      : [];
+    if (files.length === 0 && expected.length === 0) {
       records.push({ stage: 'Speed: pages', status: 'MISSING', detail: 'No Lighthouse results found.' });
     } else {
-      records.push(...evaluatePages(files.map((f) => JSON.parse(readFileSync(join(a['lhr-dir'], f), 'utf8')))));
+      const lhrs = files.map((f) => JSON.parse(readFileSync(join(a['lhr-dir'], f), 'utf8')));
+      records.push(...evaluatePages(lhrs, { expected }));
     }
   }
   if (a.timings && existsSync(a.timings)) {
