@@ -1,0 +1,5 @@
+{
+  "total": { "lines": { "total": 300, "covered": 240, "pct": 80 } },
+  "src/pay/refund.js": { "lines": { "total": 50, "covered": 50, "pct": 100 } },
+  "src/misc.js": { "lines": { "total": 250, "covered": 190, "pct": 76 } }
+}

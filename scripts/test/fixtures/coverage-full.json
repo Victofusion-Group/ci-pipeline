@@ -1,0 +1,4 @@
+{
+  "total": { "lines": { "total": 100, "covered": 100, "pct": 100 } },
+  "src/pay/charge.js": { "lines": { "total": 100, "covered": 100, "pct": 100 } }
+}

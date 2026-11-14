@@ -1,0 +1,193 @@
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { appendResult } from './lib/results.mjs';
+import { flag, isMain, parseArgs } from './lib/cli.mjs';
+import { hasScript } from './run-stage.mjs';
+
+export const BUDGETS = {
+  weightBytes: { warn: 1_000_000, fail: 2_000_000 },
+  lcpMs: { warn: 2000, fail: 2500 },
+  cls: { warn: 0.05, fail: 0.1 },
+  tbtMs: { warn: 200, fail: 300 },
+  actionMs: { warn: 1000, fail: 3000 },
+};
+
+export function median(nums) {
+  const s = [...nums].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+const trim = (n, digits) => String(Number(n.toFixed(digits)));
+const sec = (ms) => trim(ms / 1000, 1);
+
+// Writes a value that is over `limit` (same units) with `digits` decimals. When
+// that would round to the limit itself ("3 s (limit 3 s)"), it shows one more
+// decimal place, rounded up, so the reader can see the value is over.
+function over(v, limit, digits, { trimZeros = false } = {}) {
+  const out = (n, d) => (trimZeros ? trim(n, d) : n.toFixed(d));
+  if (Number(v.toFixed(digits)) > limit) return out(v, digits);
+  const d = digits + 1;
+  const f = 10 ** d;
+  let up = Math.ceil(v * f - 1e-9) / f;
+  if (up <= limit) up = limit + 1 / f;
+  return out(up, d);
+}
+
+// How each measured value reads in a sentence: `show` when within budget,
+// `problem` when over `limit`, `unit` for the limit that was crossed.
+const METRICS = [
+  { key: 'weightBytes', audit: 'total-byte-weight', missing: 'page weight', budget: BUDGETS.weightBytes,
+    show: (v) => (v < 100_000 ? `${Math.round(v / 1000)} KB` : `${(v / 1e6).toFixed(1)} MB`),
+    problem: (v, limit) => `${over(v / 1e6, limit / 1e6, 1)} MB sent`,
+    unit: (v) => `${trim(v / 1e6, 1)} MB` },
+  { key: 'lcpMs', audit: 'largest-contentful-paint', missing: 'main content time', budget: BUDGETS.lcpMs,
+    show: (v) => `main content ${sec(v)} s`,
+    problem: (v, limit) => `main content ${over(v / 1000, limit / 1000, 1, { trimZeros: true })} s`,
+    unit: (v) => `${sec(v)} s` },
+  { key: 'cls', audit: 'cumulative-layout-shift', missing: 'layout shift', budget: BUDGETS.cls,
+    show: (v) => `layout shift ${v.toFixed(2)}`,
+    problem: (v, limit) => `layout shift ${over(v, limit, 2)}`,
+    unit: (v) => String(v) },
+  { key: 'tbtMs', audit: 'total-blocking-time', missing: 'frozen time', budget: BUDGETS.tbtMs,
+    show: (v) => `frozen ${Math.round(v)} ms`,
+    problem: (v, limit) => `frozen ${over(v, limit, 0)} ms`,
+    unit: (v) => `${v} ms` },
+];
+
+const num = (x) => typeof x === 'number' && Number.isFinite(x);
+
+function urlParts(u) {
+  try {
+    const url = new URL(u);
+    return { host: url.host, path: url.pathname + url.search, full: url.href };
+  } catch {
+    return { host: '', path: u, full: u };
+  }
+}
+
+// Lighthouse reports "https://example.com" as "https://example.com/": compare on the parsed form.
+const normalise = (u) => urlParts(u).full;
+
+// `expected` lists the pages that were meant to be measured; one with no result at
+// all (site down, Lighthouse crashed) still gets a FAIL row instead of vanishing.
+export function evaluatePages(lhrs, { expected = [] } = {}) {
+  const groups = new Map();
+  for (const u of expected) groups.set(normalise(u), []);
+  for (const l of lhrs) {
+    const key = normalise(l.requestedUrl);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(l);
+  }
+  const multiHost = new Set([...groups.keys()].map((u) => urlParts(u).host)).size > 1;
+
+  const records = [];
+  for (const [requested, runs] of groups) {
+    const req = urlParts(requested);
+    const stage = `Speed: ${multiHost ? req.full : req.path}`;
+    if (runs.length === 0) {
+      records.push({ stage, status: 'FAIL', detail: 'Page could not be measured: no Lighthouse result' });
+      continue;
+    }
+    const good = runs.filter((r) => !r.runtimeError);
+    if (good.length === 0) {
+      const msg = runs[0].runtimeError?.message ?? 'unknown error';
+      records.push({ stage, status: 'FAIL', detail: `Page could not be measured: ${msg}` });
+      continue;
+    }
+
+    const values = {};
+    const missing = [];
+    for (const m of METRICS) {
+      const vals = good.map((r) => r.audits?.[m.audit]?.numericValue).filter(num);
+      if (vals.length === 0) missing.push(m.missing);
+      else values[m.key] = median(vals);
+    }
+    if (missing.length > 0) {
+      records.push({ stage, status: 'FAIL', detail: `Page could not be measured: ${missing.join(', ')} missing` });
+      continue;
+    }
+
+    let status = 'PASS';
+    const problems = [];
+    for (const m of METRICS) {
+      const v = values[m.key];
+      if (v > m.budget.fail) {
+        status = 'FAIL';
+        problems.push(`${m.problem(v, m.budget.fail)} (limit ${m.unit(m.budget.fail)})`);
+      } else if (v > m.budget.warn) {
+        if (status === 'PASS') status = 'WARN';
+        problems.push(`${m.problem(v, m.budget.warn)} (aim under ${m.unit(m.budget.warn)})`);
+      }
+    }
+    let detail = problems.length > 0
+      ? problems.join('; ')
+      : METRICS.map((m) => m.show(values[m.key])).join(', ');
+
+    const finalUrl = good[0].finalDisplayedUrl ?? good[0].finalUrl;
+    if (finalUrl) {
+      const fin = urlParts(finalUrl);
+      const a = new URL(requested);
+      const b = new URL(finalUrl);
+      if (a.pathname !== b.pathname || a.host !== b.host) {
+        const where = fin.host !== req.host ? fin.full : fin.path;
+        detail = `Measured ${where} instead (redirected). ${detail}`;
+        if (status === 'PASS') status = 'WARN';
+      }
+    }
+    records.push({ stage, status, detail });
+  }
+  return records;
+}
+
+export function evaluateTimings(entries, { warnOnly = false } = {}) {
+  const { warn, fail } = BUDGETS.actionMs;
+  const took = (ms, limit) => over(ms / 1000, limit / 1000, 1, { trimZeros: true });
+  return entries.map(({ label, ms }) => {
+    const stage = `Action: ${label}`;
+    if (ms > fail) {
+      return { stage, status: warnOnly ? 'WARN' : 'FAIL', detail: `Took ${took(ms, fail)} s (limit ${sec(fail)} s)` };
+    }
+    if (ms > warn) return { stage, status: 'WARN', detail: `Took ${took(ms, warn)} s (aim under ${sec(warn)} s)` };
+    return { stage, status: 'PASS', detail: `Took ${sec(ms)} s` };
+  });
+}
+
+export const NO_TIMINGS = {
+  stage: 'Button speed',
+  status: 'MISSING',
+  detail: 'No button timings were recorded. Wrap key actions in expectFast.',
+};
+
+if (isMain(import.meta.url)) {
+  const a = parseArgs(process.argv.slice(2));
+  const records = [];
+  // --only-if-script: the timed tests never ran, and their own row already says why.
+  if (a['only-if-script'] && !hasScript(a.cwd || process.cwd(), a['only-if-script'])) process.exit(0);
+  if (a['lhr-dir']) {
+    const files = existsSync(a['lhr-dir'])
+      ? readdirSync(a['lhr-dir']).filter((f) => f.startsWith('lhr-') && f.endsWith('.json')).sort()
+      : [];
+    const expected = typeof a.urls === 'string'
+      ? a.urls.split(/[\s,]+/).map((u) => u.trim()).filter(Boolean)
+      : [];
+    if (files.length === 0 && expected.length === 0) {
+      records.push({ stage: 'Speed: pages', status: 'MISSING', detail: 'No Lighthouse results found.' });
+    } else {
+      const lhrs = files.map((f) => JSON.parse(readFileSync(join(a['lhr-dir'], f), 'utf8')));
+      records.push(...evaluatePages(lhrs, { expected }));
+    }
+  }
+  if (typeof a.timings === 'string') {
+    const entries = existsSync(a.timings)
+      ? readFileSync(a.timings, 'utf8').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l))
+      : [];
+    // Asked for timings but none came back: say so rather than show nothing.
+    if (entries.length === 0) records.push(NO_TIMINGS);
+    else records.push(...evaluateTimings(entries, { warnOnly: flag(a['warn-only']) }));
+  }
+  for (const r of records) {
+    appendResult(a.results, r);
+    console.log(`${r.status}: ${r.stage} - ${r.detail}`);
+  }
+}

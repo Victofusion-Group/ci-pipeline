@@ -1,0 +1,45 @@
+name: Self-test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - run: npm test
+
+  checks-fixture:
+    uses: ./.github/workflows/checks.yml
+    with:
+      package_manager: npm
+      working_directory: fixtures/sample-app
+      coverage_floor: 50
+      pipeline_ref: ${{ github.sha }}
+
+  deep-fixture:
+    uses: ./.github/workflows/deep.yml
+    with:
+      package_manager: npm
+      working_directory: fixtures/sample-app
+      pipeline_ref: ${{ github.sha }}
+
+  speed-fixture:
+    uses: ./.github/workflows/speed.yml
+    # Only the nightly job that sets open_issue: true needs issues: write as well.
+    permissions:
+      contents: read
+    with:
+      urls: https://example.com/
+      target: self-test
+      open_issue: false
+      pipeline_ref: ${{ github.sha }}

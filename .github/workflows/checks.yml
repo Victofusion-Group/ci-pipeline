@@ -1,0 +1,164 @@
+name: Quick checks
+
+on:
+  workflow_call:
+    inputs:
+      package_manager:
+        description: npm or pnpm
+        type: string
+        required: true
+      pnpm_version:
+        type: string
+        default: '9'
+      node_version:
+        type: string
+        default: '22'
+      working_directory:
+        description: Folder holding the app's package.json, relative to the repo root
+        type: string
+        default: '.'
+      prepare_build:
+        description: Command run before the build (for example, writing a placeholder env file)
+        type: string
+        default: ''
+      coverage_files:
+        description: Coverage summary files, one per line, relative to working_directory
+        type: string
+        default: 'coverage/coverage-summary.json'
+      coverage_floor:
+        description: Lowest share of tested lines allowed (only ever raise it)
+        type: number
+        default: 0
+      critical_globs:
+        description: Repo-relative globs for money, login and permission code, one per line
+        type: string
+        default: ''
+      critical_enforced:
+        description: Fail when critical-path code is below 100% tested
+        type: boolean
+        default: false
+      money_project:
+        description: Makes the test script required
+        type: boolean
+        default: false
+      pipeline_ref:
+        description: Version of the ci-pipeline scripts to use
+        type: string
+        default: 'v1'
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      WD: ${{ inputs.working_directory }}
+      PM: ${{ inputs.package_manager }}
+    steps:
+      - name: Check out project
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check out ci-pipeline scripts
+        uses: actions/checkout@v7
+        with:
+          repository: Victofusion-Group/ci-pipeline
+          ref: ${{ inputs.pipeline_ref }}
+          path: .ci-pipeline
+          persist-credentials: false
+
+      - name: Move ci-pipeline out of the project
+        run: |
+          mv .ci-pipeline "$RUNNER_TEMP/ci-pipeline"
+          echo "RESULTS=$RUNNER_TEMP/results.jsonl" >> "$GITHUB_ENV"
+
+      # pnpm/action-setup stops with "Multiple versions of pnpm specified" when it is
+      # given a version and package.json also names one (packageManager: pnpm@x).
+      # Pass no version in that case, and point it at the package.json that names it.
+      - name: Pick pnpm version
+        id: pnpm
+        if: inputs.package_manager == 'pnpm'
+        env:
+          PNPM_VERSION: ${{ inputs.pnpm_version }}
+        run: |
+          version="$PNPM_VERSION"
+          file=package.json
+          for f in "$WD/package.json" package.json; do
+            if [ -f "$f" ] && jq -e '(.packageManager // "") | startswith("pnpm@")' "$f" > /dev/null 2>&1; then
+              version=""
+              file="$f"
+              break
+            fi
+          done
+          echo "Using pnpm ${version:-from $file}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "package_json_file=$file" >> "$GITHUB_OUTPUT"
+
+      - name: Set up pnpm
+        if: inputs.package_manager == 'pnpm'
+        uses: pnpm/action-setup@v6
+        with:
+          version: ${{ steps.pnpm.outputs.version }}
+          package_json_file: ${{ steps.pnpm.outputs.package_json_file }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: ${{ inputs.package_manager }}
+          cache-dependency-path: ${{ inputs.package_manager == 'pnpm' && '**/pnpm-lock.yaml' || '**/package-lock.json' }}
+
+      - name: Secret scan
+        run: node "$RUNNER_TEMP/ci-pipeline/scripts/run-stage.mjs" --stage "Secret scan" --command "bash $RUNNER_TEMP/ci-pipeline/scripts/secret-scan.sh" --pm "$PM" --cwd . --results "$RESULTS"
+
+      - name: Install
+        run: |
+          if [ "$PM" = pnpm ]; then CMD="pnpm install --frozen-lockfile"; else CMD="npm ci"; fi
+          node "$RUNNER_TEMP/ci-pipeline/scripts/run-stage.mjs" --stage "Install" --command "$CMD" --pm "$PM" --cwd "$WD" --results "$RESULTS" --stop-on-fail
+
+      - name: Typecheck
+        run: node "$RUNNER_TEMP/ci-pipeline/scripts/run-stage.mjs" --stage "Typecheck" --script typecheck --pm "$PM" --cwd "$WD" --results "$RESULTS"
+
+      - name: Lint
+        run: node "$RUNNER_TEMP/ci-pipeline/scripts/run-stage.mjs" --stage "Lint" --script lint --pm "$PM" --cwd "$WD" --results "$RESULTS"
+
+      - name: Unit tests
+        env:
+          CI: 'true'
+          REQUIRED: ${{ inputs.money_project }}
+        run: node "$RUNNER_TEMP/ci-pipeline/scripts/run-stage.mjs" --stage "Unit tests" --script test --pm "$PM" --cwd "$WD" --results "$RESULTS" --required "$REQUIRED"
+
+      - name: Coverage
+        env:
+          FILES: ${{ inputs.coverage_files }}
+          FLOOR: ${{ inputs.coverage_floor }}
+          CRITICAL: ${{ inputs.critical_globs }}
+          CRITICAL_ENFORCED: ${{ inputs.critical_enforced }}
+          # A money project, or one with a floor set, must produce a coverage file.
+          REQUIRED: ${{ inputs.money_project || inputs.coverage_floor > 0 }}
+        run: node "$RUNNER_TEMP/ci-pipeline/scripts/coverage-ratchet.mjs" --cwd "$WD" --files "$FILES" --floor "$FLOOR" --critical "$CRITICAL" --critical-enforced "$CRITICAL_ENFORCED" --required "$REQUIRED" --results "$RESULTS"
+
+      - name: Prepare build
+        if: inputs.prepare_build != ''
+        env:
+          PREPARE: ${{ inputs.prepare_build }}
+        run: node "$RUNNER_TEMP/ci-pipeline/scripts/run-stage.mjs" --stage "Prepare build" --command "$PREPARE" --pm "$PM" --cwd "$WD" --results "$RESULTS"
+
+      - name: Build
+        run: node "$RUNNER_TEMP/ci-pipeline/scripts/run-stage.mjs" --stage "Build" --script build --pm "$PM" --cwd "$WD" --results "$RESULTS"
+
+      - name: Summary
+        if: always()
+        env:
+          PIPELINE_REF: ${{ inputs.pipeline_ref }}
+        run: |
+          if [ ! -d "$RUNNER_TEMP/ci-pipeline/scripts" ]; then
+            msg="The shared checker could not load its scripts at ref $PIPELINE_REF. Check pipeline_ref in ci.yml matches the @ref in uses:."
+            echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$msg"
+            exit 1
+          fi
+          node "$RUNNER_TEMP/ci-pipeline/scripts/summary.mjs" --title "Quick checks" --results "$RESULTS"

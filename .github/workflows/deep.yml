@@ -1,0 +1,200 @@
+name: Deep checks
+
+on:
+  workflow_call:
+    inputs:
+      package_manager:
+        description: npm or pnpm
+        type: string
+        required: true
+      pnpm_version:
+        type: string
+        default: '9'
+      node_version:
+        type: string
+        default: '22'
+      working_directory:
+        description: Folder holding the app's package.json, relative to the repo root
+        type: string
+        default: '.'
+      java_version:
+        description: Java version for the Firebase emulators
+        type: string
+        default: '21'
+      firebase_tools_version:
+        description: firebase-tools version used to run the emulators
+        type: string
+        default: '15.35.0'
+      prepare_e2e:
+        description: Command run before the end-to-end tests (for example, writing a placeholder env file)
+        type: string
+        default: ''
+      playwright_install:
+        description: Command that installs the test browser
+        type: string
+        default: 'npx playwright install --with-deps chromium'
+      e2e_script:
+        description: package.json script that runs the end-to-end tests
+        type: string
+        default: 'test:e2e'
+      report_path:
+        description: Folder (relative to working_directory) holding the end-to-end report, uploaded on failure
+        type: string
+        default: 'playwright-report'
+      money_project:
+        description: Makes the end-to-end script required
+        type: boolean
+        default: false
+      pipeline_ref:
+        description: Version of the ci-pipeline scripts to use
+        type: string
+        default: 'v1'
+
+permissions:
+  contents: read
+
+jobs:
+  deep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      WD: ${{ inputs.working_directory }}
+      PM: ${{ inputs.package_manager }}
+    steps:
+      - name: Check out project
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check out ci-pipeline scripts
+        uses: actions/checkout@v7
+        with:
+          repository: Victofusion-Group/ci-pipeline
+          ref: ${{ inputs.pipeline_ref }}
+          path: .ci-pipeline
+          persist-credentials: false
+
+      - name: Move ci-pipeline out of the project
+        run: |
+          mv .ci-pipeline "$RUNNER_TEMP/ci-pipeline"
+          echo "RESULTS=$RUNNER_TEMP/results.jsonl" >> "$GITHUB_ENV"
+          echo "TIMINGS=$RUNNER_TEMP/timings.jsonl" >> "$GITHUB_ENV"
+
+      # pnpm/action-setup stops with "Multiple versions of pnpm specified" when it is
+      # given a version and package.json also names one (packageManager: pnpm@x).
+      # Pass no version in that case, and point it at the package.json that names it.
+      - name: Pick pnpm version
+        id: pnpm
+        if: inputs.package_manager == 'pnpm'
+        env:
+          PNPM_VERSION: ${{ inputs.pnpm_version }}
+        run: |
+          version="$PNPM_VERSION"
+          file=package.json
+          for f in "$WD/package.json" package.json; do
+            if [ -f "$f" ] && jq -e '(.packageManager // "") | startswith("pnpm@")' "$f" > /dev/null 2>&1; then
+              version=""
+              file="$f"
+              break
+            fi
+          done
+          echo "Using pnpm ${version:-from $file}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "package_json_file=$file" >> "$GITHUB_OUTPUT"
+
+      - name: Set up pnpm
+        if: inputs.package_manager == 'pnpm'
+        uses: pnpm/action-setup@v6
+        with:
+          version: ${{ steps.pnpm.outputs.version }}
+          package_json_file: ${{ steps.pnpm.outputs.package_json_file }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: ${{ inputs.package_manager }}
+          cache-dependency-path: ${{ inputs.package_manager == 'pnpm' && '**/pnpm-lock.yaml' || '**/package-lock.json' }}
+
+      - name: Set up Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java_version }}
+
+      - name: Cache Firebase emulators
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/firebase/emulators
+          key: firebase-emulators-${{ runner.os }}-${{ inputs.firebase_tools_version }}
+
+      - name: Install firebase-tools
+        env:
+          FIREBASE_TOOLS_VERSION: ${{ inputs.firebase_tools_version }}
+        run: npm install -g "firebase-tools@$FIREBASE_TOOLS_VERSION"
+
+      - name: Install
+        run: |
+          if [ "$PM" = pnpm ]; then CMD="pnpm install --frozen-lockfile"; else CMD="npm ci"; fi
+          node "$RUNNER_TEMP/ci-pipeline/scripts/run-stage.mjs" --stage "Install" --command "$CMD" --pm "$PM" --cwd "$WD" --results "$RESULTS" --stop-on-fail
+
+      - name: Security rules tests
+        env:
+          CI: 'true'
+        run: node "$RUNNER_TEMP/ci-pipeline/scripts/run-stage.mjs" --stage "Security rules tests" --script test:rules --pm "$PM" --cwd "$WD" --results "$RESULTS"
+
+      - name: Integration tests
+        env:
+          CI: 'true'
+        run: node "$RUNNER_TEMP/ci-pipeline/scripts/run-stage.mjs" --stage "Integration tests" --script test:integration --pm "$PM" --cwd "$WD" --results "$RESULTS"
+
+      - name: Prepare end-to-end
+        if: inputs.prepare_e2e != ''
+        env:
+          PREPARE: ${{ inputs.prepare_e2e }}
+        run: node "$RUNNER_TEMP/ci-pipeline/scripts/run-stage.mjs" --stage "Prepare end-to-end" --command "$PREPARE" --pm "$PM" --cwd "$WD" --results "$RESULTS"
+
+      - name: Install test browser
+        env:
+          PLAYWRIGHT_INSTALL: ${{ inputs.playwright_install }}
+          E2E_SCRIPT: ${{ inputs.e2e_script }}
+        run: node "$RUNNER_TEMP/ci-pipeline/scripts/run-stage.mjs" --stage "Install test browser" --command "$PLAYWRIGHT_INSTALL" --only-if-script "$E2E_SCRIPT" --pm "$PM" --cwd "$WD" --results "$RESULTS"
+
+      - name: End-to-end tests
+        env:
+          CI: 'true'
+          SPEED_TIMINGS_FILE: ${{ runner.temp }}/timings.jsonl
+          E2E_SCRIPT: ${{ inputs.e2e_script }}
+          REQUIRED: ${{ inputs.money_project }}
+        run: node "$RUNNER_TEMP/ci-pipeline/scripts/run-stage.mjs" --stage "End-to-end tests" --script "$E2E_SCRIPT" --pm "$PM" --cwd "$WD" --results "$RESULTS" --required "$REQUIRED"
+
+      # No timings file means no timed action ran: that is a MISSING row, not silence.
+      # Skipped when the end-to-end script is absent; its own row already says so.
+      - name: Button speed
+        if: always()
+        env:
+          E2E_SCRIPT: ${{ inputs.e2e_script }}
+        run: node "$RUNNER_TEMP/ci-pipeline/scripts/speed-budget.mjs" --results "$RESULTS" --timings "$TIMINGS" --warn-only --only-if-script "$E2E_SCRIPT" --cwd "$WD"
+
+      - name: Summary
+        if: always()
+        env:
+          PIPELINE_REF: ${{ inputs.pipeline_ref }}
+        run: |
+          if [ ! -d "$RUNNER_TEMP/ci-pipeline/scripts" ]; then
+            msg="The shared checker could not load its scripts at ref $PIPELINE_REF. Check pipeline_ref in ci.yml matches the @ref in uses:."
+            echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$msg"
+            exit 1
+          fi
+          node "$RUNNER_TEMP/ci-pipeline/scripts/summary.mjs" --title "Deep checks" --results "$RESULTS"
+
+      # Runs after Summary: a FAIL row only fails the job at the Summary step.
+      - name: Upload end-to-end report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-report
+          path: ${{ inputs.working_directory }}/${{ inputs.report_path }}
+          retention-days: 7
+          if-no-files-found: ignore
